@@ -1,0 +1,172 @@
+import re
+import pyaudio
+import wave
+import os
+from google.cloud import speech, texttospeech
+from openai import OpenAI
+import simpleaudio as sa   # add at top of file: pip install simpleaudio
+
+client==========----===jdlkfiroOpenAI(api_key="s")
+
+# =============================
+# RECORD AUDIO
+# =============================
+def record_audio(filename, record_seconds=5, sample_rate=16000):
+    chunk = 1024
+    format = pyaudio.paInt16
+    channels = 1
+
+    audio = pyaudio.PyAudio()
+    stream = audio.open(format=format, channels=channels,
+                        rate=sample_rate, input=True,
+                        frames_per_buffer=chunk)
+
+    print("🎙️ Recording...")
+    frames = []
+
+    for _ in range(0, int(sample_rate / chunk * record_seconds)):
+        data = stream.read(chunk, exception_on_overflow=False)
+        frames.append(data)
+
+    print("✅ Recording complete.")
+
+    stream.stop_stream()
+    stream.close()
+    audio.terminate()
+
+    with wave.open(filename, 'wb') as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(audio.get_sample_size(format))
+        wf.setframerate(sample_rate)
+        wf.writeframes(b''.join(frames))
+
+
+# =============================
+# SPEECH TO TEXT (Google STT)
+# =============================
+def transcribe_file(filename):
+    client = speech.SpeechClient()
+
+    with open(filename, 'rb') as audio_file:
+        content = audio_file.read()
+
+    audio = speech.RecognitionAudio(content=content)
+    config = speech.RecognitionConfig(
+        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+        sample_rate_hertz=16000,
+        language_code="en-US"
+    )
+
+    response = client.recognize(config=config, audio=audio)
+
+    transcript = ""
+    for result in response.results:
+        transcript += result.alternatives[0].transcript
+
+    if transcript.strip() == "":
+        print("❌ No transcription returned")
+    else:
+        print(f"📝 You said: {transcript}")
+
+    return transcript
+
+
+# =============================
+# OPENAI GPT RESPONSE
+# =============================
+
+def generate_response(user_text, history):
+    # Append new user text to conversation
+    history.append({"role": "user", "content": user_text})
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",  # lightweight conversational model
+        messages=history
+    )
+
+    ai_text = response.choices[0].message.content
+    print(f"🤖 Agent: {ai_text}")
+
+    # Append AI response to conversation
+    history.append({"role": "assistant", "content": ai_text})
+    return ai_text, history
+# =============================
+# TEXT TO SPEECH (Google TTS)
+# =============================
+
+def hinglish_to_ssml(text: str) -> str:
+    """
+    Convert a Hinglish sentence into SSML where English words
+    are wrapped in <lang xml:lang="en-US"> and Hindi words stay as-is.
+    """
+    words = text.split()
+    ssml_parts = []
+
+    for word in words:
+        if re.search(r'[a-zA-Z]', word):  # English word
+            ssml_parts.append(f'<lang xml:lang="en-US">{word}</lang>')
+        else:  # Hindi (or other script)
+            ssml_parts.append(word)
+
+    return "<speak>" + " ".join(ssml_parts) + "</speak>"
+
+
+
+def speak_text(text, output_file="response.wav"):
+    client = texttospeech.TextToSpeechClient()
+     # Auto-convert Hinglish to SSML
+    ssml_text = hinglish_to_ssml(text)
+
+    synthesis_input = texttospeech.SynthesisInput(ssml=ssml_text)
+
+    voice = texttospeech.VoiceSelectionParams(
+        language_code="hi-IN",
+        ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
+    )
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.LINEAR16
+    )
+
+    response = client.synthesize_speech(
+        input=synthesis_input, voice=voice, audio_config=audio_config
+    )
+
+    with open(output_file, "wb") as out:
+        out.write(response.audio_content)
+
+    # ✅ Play in background (no popup)
+    if os.name == "nt":  # Windows
+        os.system(
+            f'powershell -WindowStyle Hidden -c (New-Object Media.SoundPlayer "{output_file}").PlaySync()'
+        )
+    elif sys.platform == "darwin":  # macOS
+        os.system(f"afplay {output_file} &")  
+    else:  # Linux
+        os.system(f"aplay {output_file} >/dev/null 2>&1 &")  
+
+
+
+# =============================
+# MAIN LOOP
+# =============================
+def voice_agent():
+    history = [{"role": "system", "content": "You are a helpful conversational assistant."}]
+
+    while True:
+        filename = "input.wav"
+        record_audio(filename, record_seconds=5)
+
+        user_text = transcribe_file(filename)
+        if not user_text:
+            continue
+
+        if "exit" in user_text.lower() or "quit" in user_text.lower():
+            print("👋 Exiting voice agent.")
+            break
+
+        response_text, history = generate_response(user_text, history)
+        speak_text(response_text)
+
+
+if __name__ == "__main__":
+    voice_agent()
